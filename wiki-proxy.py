@@ -1,30 +1,38 @@
 #!/usr/bin/env python3
 
 from datetime import datetime
-from flask import Flask, Response
+from flask import Flask, Response, redirect, url_for
 from mwclient import Site as WikiSite
 from wikitextparser import parse as wikiparse
+import sys, traceback
 
 import json
 
 
 class Wiki:
-    def __init__(self, device: str, buildid: str, *, boardconfig: str=None) -> None:
-        self.site = WikiSite('www.theiphonewiki.com')
+    def __init__(self, device: str, buildid: str, *, boardconfig: str = None) -> None:
+        self.site = WikiSite('theapplewiki.com', path='/')
 
         self.device = device
         self.buildid = buildid
         self.board = boardconfig
 
     def get_firm_page(self) -> str:
-        results = list(self.site.search(f'{self.buildid} ({self.device})'))
+        results = list(self.site.search(f'intitle:{self.device}+{self.buildid}', namespace=2304))
         if len(results) == 0:
             raise ValueError(f'No Firmware Keys page for device: {self.device}, buildid: {self.buildid}.')
-
-        return self.site.pages[results[0]['title']].text()
+        # print(results)
+        idxs = [i for i, entry in enumerate(results) if "Keys:" in entry.get("title", "")]
+        if len(idxs) == 0:
+            return ""
+        idx = idxs[0]
+        return self.site.pages[results[idx]['title']].text()
 
     def parse_page(self, page: str) -> dict:
-        page = ' '.join([x for x in page.split(' ') if x != '']).replace('{{', '{| class="wikitable"').replace('}}', '|}') # Have to coerce wikitextparser into recognizing it as a table for easy parsing
+        print("parse_page 1")
+        print(page)
+        page = ' '.join([x for x in page.split(' ') if x != '']).replace('{{', '{| class="wikitable"').replace('}}',
+                                                                                                               '|}')  # Have to coerce wikitextparser into recognizing it as a table for easy parsing
         page_data = dict()
         for entry in wikiparse(page).tables[0].data()[0]:
             key, item = entry.split(' = ')
@@ -60,7 +68,8 @@ class Wiki:
         }
 
         for component in page_data.keys():
-            if any(x == component for x in ('Version', 'Build', 'Device', 'Model', 'Codename', 'Baseband', 'DownloadURL')):
+            if any(x == component for x in
+                   ('Version', 'Build', 'Device', 'Model', 'Codename', 'Baseband', 'DownloadURL')):
                 continue
 
             if any(component.endswith(x) for x in ('Key', 'IV', 'KBAG')):
@@ -90,13 +99,14 @@ class Wiki:
 
             if ('iv' in image.keys()) and ('key' in image.keys()):
                 image['kbag'] = image['iv'] + image['key']
-                
+
             response['keys'].append(image)
 
         return json.dumps(response)
 
 
 app = Flask('Wikiproxy API')
+
 
 @app.route('/firmware/<device>/<buildid>', methods=['GET'])
 def keys(device: str, buildid: str) -> Response:
@@ -106,18 +116,25 @@ def keys(device: str, buildid: str) -> Response:
         page = iphonewiki.get_firm_page()
         keys = iphonewiki.get_keys(page)
         return app.response_class(response=keys, mimetype='application/json')
-    except:
+    except Exception as e:
+        print(str(e))
+        print(traceback.format_exc())
         return app.response_class(status=404)
+
 
 @app.route('/firmware/<device>/<boardconfig>/<buildid>', methods=['GET'])
 def keys_a9(device: str, boardconfig: str, buildid: str) -> Response:
+    if device == boardconfig:
+        return redirect(url_for('keys', device=device, buildid=buildid))
     print(f'Getting firmware keys for device: {device} (boardconfig: {boardconfig}), buildid: {buildid}')
     iphonewiki = Wiki(device, buildid, boardconfig=boardconfig)
     try:
         page = iphonewiki.get_firm_page()
         keys = iphonewiki.get_keys(page)
         return app.response_class(response=keys, mimetype='application/json')
-    except:
+    except Exception as e:
+        print(str(e))
+        print(traceback.format_exc())
         return app.response_class(status=404)
 
 
